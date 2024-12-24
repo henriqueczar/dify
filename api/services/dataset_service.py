@@ -4,9 +4,9 @@ import logging
 import random
 import time
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
-from flask_login import current_user
+from flask_login import current_user  # type: ignore
 from sqlalchemy import func
 from werkzeug.exceptions import NotFound
 
@@ -14,8 +14,6 @@ from configs import dify_config
 from core.errors.error import LLMBadRequestError, ProviderTokenNotInitError
 from core.model_manager import ModelManager
 from core.model_runtime.entities.model_entities import ModelType
-from core.rag.datasource.keyword.keyword_factory import Keyword
-from core.rag.models.document import Document as RAGDocument
 from core.rag.retrieval.retrieval_methods import RetrievalMethod
 from events.dataset_event import dataset_was_deleted
 from events.document_event import document_was_deleted
@@ -37,6 +35,7 @@ from models.dataset import (
 )
 from models.model import UploadFile
 from models.source import DataSourceOauthBinding
+from services.entities.knowledge_entities.knowledge_entities import SegmentUpdateEntity
 from services.errors.account import NoPermissionError
 from services.errors.dataset import DatasetNameDuplicateError
 from services.errors.document import DocumentIndexingError
@@ -187,8 +186,9 @@ class DatasetService:
         return dataset
 
     @staticmethod
-    def get_dataset(dataset_id) -> Dataset:
-        return Dataset.query.filter_by(id=dataset_id).first()
+    def get_dataset(dataset_id) -> Optional[Dataset]:
+        dataset: Optional[Dataset] = Dataset.query.filter_by(id=dataset_id).first()
+        return dataset
 
     @staticmethod
     def check_dataset_model_setting(dataset):
@@ -229,14 +229,20 @@ class DatasetService:
     @staticmethod
     def update_dataset(dataset_id, data, user):
         dataset = DatasetService.get_dataset(dataset_id)
+        if not dataset:
+            raise ValueError("Dataset not found")
 
         DatasetService.check_dataset_permission(dataset, user)
         if dataset.provider == "external":
-            dataset.retrieval_model = data.get("external_retrieval_model", None)
+            external_retrieval_model = data.get("external_retrieval_model", None)
+            if external_retrieval_model:
+                dataset.retrieval_model = external_retrieval_model
             dataset.name = data.get("name", dataset.name)
             dataset.description = data.get("description", "")
+            permission = data.get("permission")
+            if permission:
+                dataset.permission = permission
             external_knowledge_id = data.get("external_knowledge_id", None)
-            dataset.permission = data.get("permission")
             db.session.add(dataset)
             if not external_knowledge_id:
                 raise ValueError("External knowledge id is required.")
@@ -368,7 +374,13 @@ class DatasetService:
                 raise NoPermissionError("You do not have permission to access this dataset.")
 
     @staticmethod
-    def check_dataset_operator_permission(user: Account = None, dataset: Dataset = None):
+    def check_dataset_operator_permission(user: Optional[Account] = None, dataset: Optional[Dataset] = None):
+        if not dataset:
+            raise ValueError("Dataset not found")
+
+        if not user:
+            raise ValueError("User not found")
+
         if dataset.permission == DatasetPermissionEnum.ONLY_ME:
             if dataset.created_by != user.id:
                 raise NoPermissionError("You do not have permission to access this dataset.")
@@ -406,6 +418,9 @@ class DocumentService:
                 {"id": "remove_urls_emails", "enabled": False},
             ],
             "segmentation": {"delimiter": "\n", "max_tokens": 500, "chunk_overlap": 50},
+        },
+        "limits": {
+            "indexing_max_segmentation_tokens_length": dify_config.INDEXING_MAX_SEGMENTATION_TOKENS_LENGTH,
         },
     }
 
@@ -601,7 +616,7 @@ class DocumentService:
         # update document to be paused
         document.is_paused = True
         document.paused_by = current_user.id
-        document.paused_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        document.paused_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
 
         db.session.add(document)
         db.session.commit()
@@ -675,7 +690,7 @@ class DocumentService:
     def save_document_with_dataset_id(
         dataset: Dataset,
         document_data: dict,
-        account: Account,
+        account: Account | Any,
         dataset_process_rule: Optional[DatasetProcessRule] = None,
         created_from: str = "web",
     ):
@@ -736,11 +751,12 @@ class DocumentService:
                     dataset.retrieval_model = document_data.get("retrieval_model") or default_retrieval_model
 
         documents = []
-        batch = time.strftime("%Y%m%d%H%M%S") + str(random.randint(100000, 999999))
         if document_data.get("original_document_id"):
             document = DocumentService.update_document_with_dataset_id(dataset, document_data, account)
             documents.append(document)
+            batch = document.batch
         else:
+            batch = time.strftime("%Y%m%d%H%M%S") + str(random.randint(100000, 999999))
             # save process rule
             if not dataset_process_rule:
                 process_rule = document_data["process_rule"]
@@ -758,6 +774,11 @@ class DocumentService:
                         rules=json.dumps(DatasetProcessRule.AUTOMATIC_RULES),
                         created_by=account.id,
                     )
+                else:
+                    logging.warn(
+                        f"Invalid process rule mode: {process_rule['mode']}, can not find dataset process rule"
+                    )
+                    return
                 db.session.add(dataset_process_rule)
                 db.session.commit()
             lock_name = "add_document_lock_dataset_id_{}".format(dataset.id)
@@ -921,7 +942,7 @@ class DocumentService:
                 if duplicate_document_ids:
                     duplicate_document_indexing_task.delay(dataset.id, duplicate_document_ids)
 
-            return documents, batch
+        return documents, batch
 
     @staticmethod
     def check_documents_upload_quota(count: int, features: FeatureModel):
@@ -985,9 +1006,6 @@ class DocumentService:
             raise NotFound("Document not found")
         if document.display_status != "available":
             raise ValueError("Document is not available")
-        # update document name
-        if document_data.get("name"):
-            document.name = document_data["name"]
         # save process rule
         if document_data.get("process_rule"):
             process_rule = document_data["process_rule"]
@@ -1005,9 +1023,10 @@ class DocumentService:
                     rules=json.dumps(DatasetProcessRule.AUTOMATIC_RULES),
                     created_by=account.id,
                 )
-            db.session.add(dataset_process_rule)
-            db.session.commit()
-            document.dataset_process_rule_id = dataset_process_rule.id
+            if dataset_process_rule is not None:
+                db.session.add(dataset_process_rule)
+                db.session.commit()
+                document.dataset_process_rule_id = dataset_process_rule.id
         # update document data source
         if document_data.get("data_source"):
             file_name = ""
@@ -1064,6 +1083,10 @@ class DocumentService:
             document.data_source_type = document_data["data_source"]["type"]
             document.data_source_info = json.dumps(data_source_info)
             document.name = file_name
+
+        # update document name
+        if document_data.get("name"):
+            document.name = document_data["name"]
         # update document to be waiting
         document.indexing_status = "waiting"
         document.completed_at = None
@@ -1071,7 +1094,7 @@ class DocumentService:
         document.parsing_completed_at = None
         document.cleaning_completed_at = None
         document.splitting_completed_at = None
-        document.updated_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        document.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
         document.created_from = created_from
         document.doc_form = document_data["doc_form"]
         db.session.add(document)
@@ -1408,14 +1431,18 @@ class SegmentService:
                 word_count=len(content),
                 tokens=tokens,
                 status="completed",
-                indexing_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
-                completed_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+                indexing_at=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
+                completed_at=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
                 created_by=current_user.id,
             )
             if document.doc_form == "qa_model":
+                segment_document.word_count += len(args["answer"])
                 segment_document.answer = args["answer"]
 
             db.session.add(segment_document)
+            # update document word count
+            document.word_count += segment_document.word_count
+            db.session.add(document)
             db.session.commit()
 
             # save vector index
@@ -1424,7 +1451,7 @@ class SegmentService:
             except Exception as e:
                 logging.exception("create segment index failed")
                 segment_document.enabled = False
-                segment_document.disabled_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                segment_document.disabled_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
                 segment_document.status = "error"
                 segment_document.error = str(e)
                 db.session.commit()
@@ -1434,6 +1461,7 @@ class SegmentService:
     @classmethod
     def multi_create_segment(cls, segments: list, document: Document, dataset: Dataset):
         lock_name = "multi_add_segment_lock_document_id_{}".format(document.id)
+        increment_word_count = 0
         with redis_client.lock(lock_name, timeout=600):
             embedding_model = None
             if dataset.indexing_technique == "high_quality":
@@ -1452,6 +1480,7 @@ class SegmentService:
             pre_segment_data_list = []
             segment_data_list = []
             keywords_list = []
+            position = max_position + 1 if max_position else 1
             for segment_item in segments:
                 content = segment_item["content"]
                 doc_id = str(uuid.uuid4())
@@ -1459,33 +1488,41 @@ class SegmentService:
                 tokens = 0
                 if dataset.indexing_technique == "high_quality" and embedding_model:
                     # calc embedding use tokens
-                    tokens = embedding_model.get_text_embedding_num_tokens(texts=[content])
+                    if document.doc_form == "qa_model":
+                        tokens = embedding_model.get_text_embedding_num_tokens(texts=[content + segment_item["answer"]])
+                    else:
+                        tokens = embedding_model.get_text_embedding_num_tokens(texts=[content])
                 segment_document = DocumentSegment(
                     tenant_id=current_user.current_tenant_id,
                     dataset_id=document.dataset_id,
                     document_id=document.id,
                     index_node_id=doc_id,
                     index_node_hash=segment_hash,
-                    position=max_position + 1 if max_position else 1,
+                    position=position,
                     content=content,
                     word_count=len(content),
                     tokens=tokens,
                     status="completed",
-                    indexing_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
-                    completed_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+                    indexing_at=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
+                    completed_at=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
                     created_by=current_user.id,
                 )
                 if document.doc_form == "qa_model":
                     segment_document.answer = segment_item["answer"]
+                    segment_document.word_count += len(segment_item["answer"])
+                increment_word_count += segment_document.word_count
                 db.session.add(segment_document)
                 segment_data_list.append(segment_document)
+                position += 1
 
                 pre_segment_data_list.append(segment_document)
                 if "keywords" in segment_item:
                     keywords_list.append(segment_item["keywords"])
                 else:
                     keywords_list.append(None)
-
+            # update document word count
+            document.word_count += increment_word_count
+            db.session.add(document)
             try:
                 # save vector index
                 VectorService.create_segments_vector(keywords_list, pre_segment_data_list, dataset)
@@ -1493,7 +1530,7 @@ class SegmentService:
                 logging.exception("create segment index failed")
                 for segment_document in segment_data_list:
                     segment_document.enabled = False
-                    segment_document.disabled_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                    segment_document.disabled_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
                     segment_document.status = "error"
                     segment_document.error = str(e)
             db.session.commit()
@@ -1501,16 +1538,17 @@ class SegmentService:
 
     @classmethod
     def update_segment(cls, args: dict, segment: DocumentSegment, document: Document, dataset: Dataset):
+        segment_update_entity = SegmentUpdateEntity(**args)
         indexing_cache_key = "segment_{}_indexing".format(segment.id)
         cache_result = redis_client.get(indexing_cache_key)
         if cache_result is not None:
             raise ValueError("Segment is indexing, please try again later")
-        if "enabled" in args and args["enabled"] is not None:
-            action = args["enabled"]
+        if segment_update_entity.enabled is not None:
+            action = segment_update_entity.enabled
             if segment.enabled != action:
                 if not action:
                     segment.enabled = action
-                    segment.disabled_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                    segment.disabled_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
                     segment.disabled_by = current_user.id
                     db.session.add(segment)
                     db.session.commit()
@@ -1519,37 +1557,35 @@ class SegmentService:
                     disable_segment_from_index_task.delay(segment.id)
                     return segment
         if not segment.enabled:
-            if "enabled" in args and args["enabled"] is not None:
-                if not args["enabled"]:
+            if segment_update_entity.enabled is not None:
+                if not segment_update_entity.enabled:
                     raise ValueError("Can't update disabled segment")
             else:
                 raise ValueError("Can't update disabled segment")
         try:
-            content = args["content"]
+            word_count_change = segment.word_count
+            content = segment_update_entity.content
             if segment.content == content:
+                segment.word_count = len(content)
                 if document.doc_form == "qa_model":
-                    segment.answer = args["answer"]
-                if args.get("keywords"):
-                    segment.keywords = args["keywords"]
+                    segment.answer = segment_update_entity.answer
+                    segment.word_count += len(segment_update_entity.answer or "")
+                word_count_change = segment.word_count - word_count_change
+                if segment_update_entity.keywords:
+                    segment.keywords = segment_update_entity.keywords
                 segment.enabled = True
                 segment.disabled_at = None
                 segment.disabled_by = None
                 db.session.add(segment)
                 db.session.commit()
+                # update document word count
+                if word_count_change != 0:
+                    document.word_count = max(0, document.word_count + word_count_change)
+                    db.session.add(document)
                 # update segment index task
-                if "keywords" in args:
-                    keyword = Keyword(dataset)
-                    keyword.delete_by_ids([segment.index_node_id])
-                    document = RAGDocument(
-                        page_content=segment.content,
-                        metadata={
-                            "doc_id": segment.index_node_id,
-                            "doc_hash": segment.index_node_hash,
-                            "document_id": segment.document_id,
-                            "dataset_id": segment.dataset_id,
-                        },
-                    )
-                    keyword.add_texts([document], keywords_list=[args["keywords"]])
+                if segment_update_entity.enabled:
+                    keywords = segment_update_entity.keywords or []
+                    VectorService.create_segments_vector([keywords], [segment], dataset)
             else:
                 segment_hash = helper.generate_text_hash(content)
                 tokens = 0
@@ -1563,35 +1599,44 @@ class SegmentService:
                     )
 
                     # calc embedding use tokens
-                    tokens = embedding_model.get_text_embedding_num_tokens(texts=[content])
+                    if document.doc_form == "qa_model":
+                        tokens = embedding_model.get_text_embedding_num_tokens(texts=[content + segment.answer])
+                    else:
+                        tokens = embedding_model.get_text_embedding_num_tokens(texts=[content])
                 segment.content = content
                 segment.index_node_hash = segment_hash
                 segment.word_count = len(content)
                 segment.tokens = tokens
                 segment.status = "completed"
-                segment.indexing_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-                segment.completed_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                segment.indexing_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+                segment.completed_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
                 segment.updated_by = current_user.id
-                segment.updated_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                segment.updated_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
                 segment.enabled = True
                 segment.disabled_at = None
                 segment.disabled_by = None
                 if document.doc_form == "qa_model":
-                    segment.answer = args["answer"]
+                    segment.answer = segment_update_entity.answer
+                    segment.word_count += len(segment_update_entity.answer or "")
+                word_count_change = segment.word_count - word_count_change
+                # update document word count
+                if word_count_change != 0:
+                    document.word_count = max(0, document.word_count + word_count_change)
+                    db.session.add(document)
                 db.session.add(segment)
                 db.session.commit()
                 # update segment vector index
-                VectorService.update_segment_vector(args["keywords"], segment, dataset)
+                VectorService.update_segment_vector(segment_update_entity.keywords, segment, dataset)
 
         except Exception as e:
             logging.exception("update segment index failed")
             segment.enabled = False
-            segment.disabled_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            segment.disabled_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
             segment.status = "error"
             segment.error = str(e)
             db.session.commit()
-        segment = db.session.query(DocumentSegment).filter(DocumentSegment.id == segment.id).first()
-        return segment
+        new_segment = db.session.query(DocumentSegment).filter(DocumentSegment.id == segment.id).first()
+        return new_segment
 
     @classmethod
     def delete_segment(cls, segment: DocumentSegment, document: Document, dataset: Dataset):
@@ -1606,6 +1651,9 @@ class SegmentService:
             redis_client.setex(indexing_cache_key, 600, 1)
             delete_segment_from_index_task.delay(segment.id, segment.index_node_id, dataset.id, document.id)
         db.session.delete(segment)
+        # update document word count
+        document.word_count -= segment.word_count
+        db.session.add(document)
         db.session.commit()
 
 
@@ -1648,6 +1696,8 @@ class DatasetCollectionBindingService:
             .order_by(DatasetCollectionBinding.created_at)
             .first()
         )
+        if not dataset_collection_binding:
+            raise ValueError("Dataset collection binding not found")
 
         return dataset_collection_binding
 

@@ -3,7 +3,7 @@ import logging
 import time
 
 import click
-from celery import shared_task
+from celery import shared_task  # type: ignore
 from werkzeug.exceptions import NotFound
 
 from core.indexing_runner import DocumentIsPausedError, IndexingRunner
@@ -30,7 +30,7 @@ def document_indexing_update_task(dataset_id: str, document_id: str):
         raise NotFound("Document not found")
 
     document.indexing_status = "parsing"
-    document.processing_started_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    document.processing_started_at = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
     db.session.commit()
 
     # delete all document segment and index

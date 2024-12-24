@@ -11,6 +11,7 @@ from core.rag.extractor.entity.extract_setting import ExtractSetting
 from core.rag.extractor.extract_processor import ExtractProcessor
 from core.rag.index_processor.index_processor_base import BaseIndexProcessor
 from core.rag.models.document import Document
+from core.tools.utils.text_processing_utils import remove_leading_symbols
 from libs import helper
 from models.dataset import Dataset
 
@@ -26,12 +27,13 @@ class ParagraphIndexProcessor(BaseIndexProcessor):
     def transform(self, documents: list[Document], **kwargs) -> list[Document]:
         # Split the text documents into nodes.
         splitter = self._get_splitter(
-            processing_rule=kwargs.get("process_rule"), embedding_model_instance=kwargs.get("embedding_model_instance")
+            processing_rule=kwargs.get("process_rule", {}),
+            embedding_model_instance=kwargs.get("embedding_model_instance"),
         )
         all_documents = []
         for document in documents:
             # document clean
-            document_text = CleanProcessor.clean(document.page_content, kwargs.get("process_rule"))
+            document_text = CleanProcessor.clean(document.page_content, kwargs.get("process_rule", {}))
             document.page_content = document_text
             # parse document to nodes
             document_nodes = splitter.split_documents([document])
@@ -40,14 +42,11 @@ class ParagraphIndexProcessor(BaseIndexProcessor):
                 if document_node.page_content.strip():
                     doc_id = str(uuid.uuid4())
                     hash = helper.generate_text_hash(document_node.page_content)
-                    document_node.metadata["doc_id"] = doc_id
-                    document_node.metadata["doc_hash"] = hash
+                    if document_node.metadata is not None:
+                        document_node.metadata["doc_id"] = doc_id
+                        document_node.metadata["doc_hash"] = hash
                     # delete Splitter character
-                    page_content = document_node.page_content
-                    if page_content.startswith(".") or page_content.startswith("。"):
-                        page_content = page_content[1:].strip()
-                    else:
-                        page_content = page_content
+                    page_content = remove_leading_symbols(document_node.page_content).strip()
                     if len(page_content) > 0:
                         document_node.page_content = page_content
                         split_documents.append(document_node)

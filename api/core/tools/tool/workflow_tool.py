@@ -58,30 +58,30 @@ class WorkflowTool(Tool):
             user=self._get_user(user_id),
             args={"inputs": tool_parameters, "files": files},
             invoke_from=self.runtime.invoke_from,
-            stream=False,
+            streaming=False,
             call_depth=self.workflow_call_depth + 1,
             workflow_thread_pool_id=self.thread_pool_id,
         )
-
+        assert isinstance(result, dict)
         data = result.get("data", {})
 
         if data.get("error"):
             raise Exception(data.get("error"))
 
-        result = []
+        r = []
 
         outputs = data.get("outputs")
         if outputs == None:
             outputs = {}
         else:
-            outputs, files = self._extract_files(outputs)
-            for file in files:
-                result.append(self.create_file_message(file))
+            outputs, extracted_files = self._extract_files(outputs)
+            for f in extracted_files:
+                r.append(self.create_file_message(f))
 
-        result.append(self.create_text_message(json.dumps(outputs, ensure_ascii=False)))
-        result.append(self.create_json_message(outputs))
+        r.append(self.create_text_message(json.dumps(outputs, ensure_ascii=False)))
+        r.append(self.create_json_message(outputs))
 
-        return result
+        return r
 
     def _get_user(self, user_id: str) -> Union[EndUser, Account]:
         """
@@ -175,7 +175,7 @@ class WorkflowTool(Tool):
 
                             files.append(file_dict)
                     except Exception as e:
-                        logger.exception(e)
+                        logger.exception(f"Failed to transform file {file}")
             else:
                 parameters_result[parameter.name] = tool_parameters.get(parameter.name)
 

@@ -157,6 +157,10 @@ const translation = {
       title: 'Langfuse',
       description: '跟踪、评估、提示管理和指标，以调试和改进您的 LLM 应用程序。',
     },
+    opik: {
+      title: 'Opik',
+      description: '一个全方位的开发者平台，适用于 LLM 驱动应用程序生命周期的每个步骤。',
+    },
     inUse: '使用中',
     configProvider: {
       title: '配置 ',
@@ -169,8 +173,25 @@ const translation = {
       removeConfirmContent: '当前配置正在使用中，删除它将关闭追踪功能。',
     },
   },
+  appSelector: {
+    label: '应用',
+    placeholder: '选择一个应用',
+    params: '应用参数',
+    noParams: '无需参数',
+  },
   openInExplore: '在“探索”中打开',
   showMyCreatedAppsOnly: '我创建的',
+  structOutput: {
+    moreFillTip: '最多显示 10 级嵌套',
+    required: '必填',
+    LLMResponse: 'LLM 的响应',
+    configure: '配置',
+    notConfiguredTip: '结构化输出尚未配置',
+    structured: '结构化输出',
+    structuredTip: '结构化输出是一项功能，可确保模型始终生成符合您提供的 JSON 模式的响应',
+    modelNotSupported: '模型不支持',
+    modelNotSupportedTip: '当前模型不支持此功能，将自动降级为提示注入。',
+  },
 }
 
 export default translation

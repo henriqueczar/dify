@@ -55,6 +55,7 @@ const translation = {
         chatColorThemeDesc: 'กําหนดธีมสีของแชทบอท',
         chatColorThemeInverted: 'คว่ำ',
         invalidHexMessage: 'ค่าฐานสิบหกไม่ถูกต้อง',
+        invalidPrivacyPolicy: 'ลิงก์นโยบายความเป็นส่วนตัวไม่ถูกต้อง โปรดใช้ลิงก์ที่ถูกต้องขึ้นต้นด้วย http หรือ https',
         sso: {
           label: 'การรับรองความถูกต้องของ SSO',
           title: 'เว็บแอป SSO',
@@ -71,7 +72,10 @@ const translation = {
           customDisclaimer: 'ข้อจํากัดความรับผิดชอบที่กําหนดเอง',
           customDisclaimerPlaceholder: 'ป้อนข้อความข้อจํากัดความรับผิดชอบที่กําหนดเอง',
           customDisclaimerTip: 'ข้อความปฏิเสธความรับผิดชอบที่กําหนดเองจะแสดงที่ฝั่งไคลเอ็นต์ โดยให้ข้อมูลเพิ่มเติมเกี่ยวกับแอปพลิเคชัน',
+          copyrightTip: 'แสดงข้อมูลลิขสิทธิ์ในเว็บแอป',
+          copyrightTooltip: 'โปรดอัปเกรดเป็นแผน Professional หรือสูงกว่า',
         },
+        modalTip: 'การตั้งค่าเว็บแอปฝั่งไคลเอ็นต์',
       },
       embedded: {
         entry: 'ฝัง ตัว',
@@ -109,6 +113,7 @@ const translation = {
           operation: 'เอกสาร',
         },
       },
+      launch: 'เรือยนต์',
     },
     apiInfo: {
       title: 'API บริการแบ็กเอนด์',
